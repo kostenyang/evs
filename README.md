@@ -132,7 +132,7 @@ PowerShell 版在 `reports\`），含所有 API 原始回應，可直接附在 c
 
 ## 實測狀態
 
-在 lab 的 NSX **9.1.0.0.25318225**（`vcf-m02-nsx01a` / 10.0.1.20）跑過 shell 版與 PowerShell 版的
+在一套 nested lab 的 NSX **9.1.0.0.25318225** 上跑過 shell 版與 PowerShell 版的
 check 模式，行為一致：
 
 - 連線 / 版本偵測正常

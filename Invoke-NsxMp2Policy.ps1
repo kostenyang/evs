@@ -51,7 +51,8 @@
 
 .EXAMPLE
     # 只檢查（唯讀，可在正式環境隨時跑）
-    .\Invoke-NsxMp2Policy.ps1 -NsxManager nsx-mgmt.home.lab -User admin -Password 'VMware1!VMware1!'
+    .\Invoke-NsxMp2Policy.ps1 -NsxManager nsx-mgmt.example.local -User admin
+    # 不給 -Password 會互動式詢問；也可用 -Credential 帶 PSCredential
 
 .EXAMPLE
     # 實際做 promotion，個別物件失敗就跳過
