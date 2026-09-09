@@ -1,0 +1,5 @@
+# 這支 script 要在 NSX Manager (Linux) 上跑,任何平台 checkout 都必須是 LF,
+# 否則 shebang 後面帶 \r 會出現 "bash: \r: command not found"
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.md   text
