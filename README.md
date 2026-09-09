@@ -43,7 +43,27 @@ st en
 bash /tmp/kb385606-mp2policy.sh --action check
 ```
 
-不帶 `--host` 時預設打 `localhost`；不帶密碼時會互動式輸入（也吃 `NSX_PASSWORD` 環境變數）。
+不帶參數時會互動式問目標與密碼，客戶不用記任何旗標：
+
+```
+NSX Manager IP or FQDN [localhost]: nsx-mgr.corp.local
+Password for admin@nsx-mgr.corp.local:
+```
+
+`--host` 吃得下客戶可能打進來的各種寫法，都會正規化成同一個目標：
+
+| 輸入 | 解析結果 |
+|---|---|
+| `10.20.30.40` | `10.20.30.40` |
+| `nsx-mgr.corp.local` | `nsx-mgr.corp.local` |
+| `nsx-mgr.corp.local:443` | host `nsx-mgr.corp.local` + port `443` |
+| `https://nsx-mgr.corp.local/` | `nsx-mgr.corp.local` |
+| `[2001:db8::1]` | `[2001:db8::1]` |
+| 前後多打空白、FQDN 結尾多一個點 | 自動去掉 |
+| `bad host`、`-bad.local`、`host:99999` | 擋下來並重問 |
+
+在 NSX Manager 上跑就直接 Enter 用 `localhost`。密碼可用 `-p`、`NSX_PASSWORD` 環境變數，
+或留空互動輸入（輸入時不回顯）。FQDN 若在該台機器上解不出來，連線前會先警告要檢查 DNS。
 
 ### 常用組合
 
@@ -85,6 +105,9 @@ pwsh -File .\Invoke-NsxMp2Policy.ps1 -NsxManager nsx-mgmt.example.local -User ad
 ```bash
 pwsh -File .\Invoke-NsxMp2Policy.ps1 -NsxManager nsx-mgmt.example.local -Action Promote -SkipFailedResources
 ```
+
+`-NsxManager` 是必填參數，不給的話 PowerShell 會自己跳出來問；輸入同樣接受 IP / FQDN /
+`host:port` / 貼上來的 `https://` URL，不合法會直接擋下。密碼不給則互動式詢問。
 
 支援 `-WhatIf` / `-Confirm`，Windows PowerShell 5.1 與 PowerShell 7+ 都可跑。
 

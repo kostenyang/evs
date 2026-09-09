@@ -34,7 +34,8 @@
 set -u
 umask 077
 
-HOST="localhost"
+HOST=""            # empty = ask interactively (defaults to localhost on Enter)
+HOST_NAME=""       # hostname only, no port - used for the netrc machine entry
 USERNAME="admin"
 PASSWORD=""
 ACTION="check"
@@ -53,7 +54,9 @@ usage() {
 
 Usage: kb385606-mp2policy.sh [options]
 
-  --host <fqdn|ip>     NSX Manager (default: localhost)
+  --host <ip|fqdn>     NSX Manager to work on. Accepts an IP, an FQDN, an
+                       optional :port, or a pasted https:// URL.
+                       Omit it and the script asks (Enter = localhost).
   -u, --user <name>    admin user (default: admin)
   -p, --password <pw>  password; else $NSX_PASSWORD, else prompted
   --action check|promote
@@ -107,6 +110,18 @@ else
   C_RST=""; C_CYN=""; C_GRN=""; C_YEL=""; C_RED=""; C_GRY=""
 fi
 step() { printf '\n%s=== %s%s\n' "$C_CYN" "$*" "$C_RST"; }
+# read one line from the terminal even when stdin is redirected
+ask() { # ask <prompt-text>  -> answer in $ANSWER
+  printf '%s' "$1" >&2
+  ANSWER=""
+  # prefer the terminal so a redirected stdin does not swallow the prompt, but
+  # fall back to stdin when there is no controlling tty (piped / scripted runs)
+  if [ -r /dev/tty ] && IFS= read -r ANSWER 2>/dev/null < /dev/tty; then
+    return 0
+  fi
+  IFS= read -r ANSWER || ANSWER=""
+}
+interactive() { [ -r /dev/tty ] || [ -t 0 ]; }
 ok()   { printf '  %s[ OK ]%s %s\n' "$C_GRN" "$C_RST" "$*"; }
 warn() { printf '  %s[WARN]%s %s\n' "$C_YEL" "$C_RST" "$*"; }
 bad()  { printf '  %s[FAIL]%s %s\n' "$C_RED" "$C_RST" "$*"; }
@@ -115,6 +130,69 @@ info() { printf '  %s[ .. ]%s %s\n' "$C_GRY" "$C_RST" "$*"; }
 # ------------------------------------------------------------ dependencies --
 have() { command -v "$1" >/dev/null 2>&1; }
 have curl || { echo "curl not found" >&2; exit 2; }
+
+# --------------------------------------------------------- target selection --
+# Accepts an IP, an FQDN, optionally with a scheme, a port, or a trailing path:
+#   10.20.30.40        nsx-mgr.corp.local        https://nsx-mgr.corp.local/
+#   nsx-mgr.corp.local:443                       [2001:db8::1]
+normalize_host() {
+  local h="$1"
+  # trim the ends only - whitespace inside must fail validation, not be swallowed
+  h="$(printf '%s' "$h" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  h="${h#http://}"; h="${h#https://}"   # tolerate a pasted URL
+  h="${h%%/*}"                          # drop any path
+  h="${h%.}"                            # drop a trailing dot on an FQDN
+  printf '%s' "$h"
+}
+
+# splits $1 into HOST_NAME (no port) + HOST (host[:port]); returns 1 if invalid
+parse_host() {
+  local h name port rest
+  h="$(normalize_host "$1")"
+  [ -n "$h" ] || return 1
+  case "$h" in
+    \[*\]*)  name="${h%%]*}]"; rest="${h#*]}"; port="${rest#:}" ;;  # [IPv6]:port
+    *:*:*)   name="[$h]";      port="" ;;                          # bare IPv6
+    *:*)     name="${h%%:*}";  port="${h##*:}" ;;
+    *)       name="$h";        port="" ;;
+  esac
+  case "$name" in
+    \[*\]) : ;;                                                    # IPv6 literal
+    *[!A-Za-z0-9.-]*|-*|.*|*.) return 1 ;;                         # illegal chars
+    *) : ;;
+  esac
+  if [ -n "$port" ]; then
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+    HOST="${name}:${port}"
+  else
+    HOST="$name"
+  fi
+  HOST_NAME="$name"
+  return 0
+}
+
+if [ -n "$HOST" ]; then
+  parse_host "$HOST" || { echo "invalid --host value: $HOST" >&2; exit 2; }
+elif interactive; then
+  while : ; do
+    ask 'NSX Manager IP or FQDN [localhost]: '
+    [ -n "$ANSWER" ] || ANSWER="localhost"
+    if parse_host "$ANSWER"; then break; fi
+    echo "  not a valid IP / FQDN: $ANSWER" >&2
+  done
+else
+  parse_host localhost
+fi
+
+# resolvable? warn early instead of leaving the customer with a bare curl error
+case "$HOST_NAME" in
+  \[*\]|localhost) : ;;                    # IPv6 literal / localhost - nothing to resolve
+  *[A-Za-z]*)                              # has a letter, so it is a name
+    if have getent && ! getent hosts "$HOST_NAME" >/dev/null 2>&1; then
+      warn "$HOST_NAME does not resolve on this host - check DNS, or use the IP instead"
+    fi ;;
+esac
 
 PY=""
 for c in python3 python; do have "$c" && { PY="$c"; break; }; done
@@ -151,18 +229,20 @@ if [ -z "$PASSWORD" ]; then
   if [ -n "${NSX_PASSWORD:-}" ]; then
     PASSWORD="$NSX_PASSWORD"
   else
-    printf 'Password for %s@%s: ' "$USERNAME" "$HOST" >&2
-    stty -echo 2>/dev/null; IFS= read -r PASSWORD; stty echo 2>/dev/null
+    stty -echo 2>/dev/null
+    ask "Password for ${USERNAME}@${HOST}: "
+    stty echo 2>/dev/null
     printf '\n' >&2
+    PASSWORD="$ANSWER"
   fi
 fi
 [ -n "$PASSWORD" ] || { echo "empty password" >&2; exit 2; }
 
-# credentials go in a 0600 netrc, never on the curl command line (ps-visible)
+# credentials go in a 0600 netrc, never on the curl command line (ps-visible).
+# netrc matches on the hostname only, so any :port must not be included here.
 NETRC="$(mktemp)"
 chmod 600 "$NETRC"
-NETRC_HOST="$HOST"
-printf 'machine %s login %s password %s\n' "$NETRC_HOST" "$USERNAME" "$PASSWORD" > "$NETRC"
+printf 'machine %s login %s password %s\n' "$HOST_NAME" "$USERNAME" "$PASSWORD" > "$NETRC"
 WORKDIR="$(mktemp -d)"
 cleanup() { rm -f "$NETRC"; rm -rf "$WORKDIR"; }
 trap cleanup EXIT INT TERM
@@ -239,7 +319,11 @@ finish() { write_report "$1"; exit "$1"; }
 step "0. Connect to NSX Manager $HOST"
 if ! api GET /api/v1/node; then
   bad "cannot reach NSX API (HTTP $HTTP)"
-  [ "$HTTP" = "403" ] && info "403 usually means bad credentials or a locked account"
+  case "$HTTP" in
+    000) info "no HTTP response - wrong IP/FQDN, no route, or 443 blocked by a firewall"
+         info "target was https://${HOST}/api/v1/node" ;;
+    401|403) info "authentication rejected - check user/password, or the account may be locked" ;;
+  esac
   finish 2
 fi
 R_VERSION="$(printf '%s' "$BODY" | json_get product_version)"

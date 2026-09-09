@@ -95,6 +95,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# -NsxManager 是 Mandatory，PowerShell 會自己問。這裡容錯客戶可能貼進來的形式：
+# https://nsx.corp.local/ 、nsx.corp.local:443 、結尾多一個點的 FQDN、前後空白
+$NsxManager = $NsxManager.Trim() -replace '^https?://', '' -replace '/.*$', '' -replace '\.$', ''
+if ([string]::IsNullOrWhiteSpace($NsxManager)) { throw 'NsxManager 不可為空' }
+if ($NsxManager -notmatch '^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9][A-Za-z0-9.\-]*)(:[0-9]{1,5})?$') {
+    throw "不是合法的 IP / FQDN：$NsxManager"
+}
+
 # ---------------------------------------------------------------- 基礎設施 ----
 
 $script:IsCoreEdition = $PSVersionTable.PSVersion.Major -ge 6
