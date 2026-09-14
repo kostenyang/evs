@@ -1,3 +1,12 @@
+# evs — VCF / NSX 9 維運腳本
+
+| 目錄 / 檔案 | KB | 用途 |
+|---|---|---|
+| `kb385606-mp2policy.sh`, `Invoke-NsxMp2Policy.ps1` | [385606](https://knowledge.broadcom.com/external/article/385606) | NSX 升 9 precheck「MP Objects found in DB」：盤點 / promote / 清 bridge FW（本頁下方） |
+| `kb452458-primary-datastore/` | [452458](https://knowledge.broadcom.com/external/article/452458) | Imported cluster 換 principal datastore：SDDC Manager inventory 匯出 / 更新 / 驗證 / 還原 |
+
+---
+
 # KB 385606 → script
 
 **KB**: [“Check for data inconsistencies in DB upgrade” NSX precheck error for VCF 9 upgrades — “MP Objects found in DB”](https://knowledge.broadcom.com/external/article/385606)
