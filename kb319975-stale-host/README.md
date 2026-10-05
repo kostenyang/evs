@@ -22,6 +22,8 @@ Failed to get Host status for upgrade unit <uuid>
 | 檔案 | 用途 |
 |---|---|
 | `kb319975_stale_host.py` | **主要** — 在自己的機器（Windows / Linux / Mac）上跑，只打 NSX Manager API；Python 3.8+ 純標準函式庫 |
+| `tests/mock_nsx.py` | 假的 NSX Manager API（5 個情境），離線練習 / 回歸測試用 |
+| `tests/test_scan.py` | `python tests/test_scan.py` 跑 11 個 unittest（scan / state / delete dry-run / 安全閘 / force delete + poll） |
 
 `resync` 子命令要 SSH 進 NSX Manager，需要 `paramiko`；沒裝的話它會把要手動貼的指令印出來。
 
@@ -90,6 +92,17 @@ Recommended next step(s):
 **為什麼要分開看 search index**：NSX UI 和 SDDC Manager precheck 讀的是 search index。
 只有 index 有、Manager / Policy API 都查不到 → 這就是 KB option 2 的教科書案例，
 要跑 `resync` 而不是去刪東西（刪也沒東西可刪）。
+
+search index 每一筆的 STATE 欄會標成兩種：
+
+| STATE | 意思 |
+|---|---|
+| `mirrors a live API object` | Manager / Policy / discovered-node API 也查得到同一個 id，只是 index 的副本，**不是殘留** |
+| `STALE (no API object behind it)` | API 都沒有、只剩 index 有 → 真正的殘留，走 option 2 |
+
+**discovered node 不是殘留**：`discovered_nodes` 那筆是 vCenter 透過 compute manager 回報的「現在這台主機」
+（重裝後是新的 `host-NNN` MoRef）。新主機還沒 prep 本來就只會有 discovered node 沒有 transport node，
+scan 會明講「nothing to clean」，不會再誤導去跑 option 1。
 
 ### 2. option 2：search 重建索引
 
@@ -175,9 +188,47 @@ NSX 版本、失敗是在 upgrade 還是 install、已經做過哪幾個 option�
 
 ---
 
+## 實機案例：NSX 9.1.1 + 重裝的 ESXi 9.1.1 顯示 Orphaned（2026-10-05）
+
+症狀：叢集其他主機正常，一台重灌成 ESXi 9.1.1 再加回 vCenter 的主機在 **System > Hosts** 顯示
+**NSX Configuration = Orphaned**、TEP Not Set、Tunnels Not Available，錯誤訊息是
+`NSX Manager could not send Host Configuration message ... check /etc/init.d/nsx-proxy status`。
+
+ESXi 端：`esxcli software vib list | grep -i nsx` 空的、`nsx-proxy is not running` —— 這是一台還沒 prep
+的乾淨主機，UI 那段「重啟 nsx-proxy」的提示在這裡沒有意義。
+
+`scan` 結果（在 NSX Manager 的 root shell 直接用 appliance 內建 python 跑的）：
+
+| 位置 | 結果 |
+|---|---|
+| Manager API transport-nodes | 0 |
+| Manager API fabric/nodes | **HTTP 500**（NSX 9 已拿掉 MP fabric API，script 自動跳過） |
+| discovered-nodes | 1（新主機的 `<vc-uuid>:host-NNN`，正常） |
+| Policy API host-transport-nodes | 0 |
+| search index | 2：DiscoveredNode（同上，副本）+ **TransportNode `75dd…`（舊主機，STALE）** |
+
+結論：transport node 物件已經不在資料庫，只剩 search index 殘影 → **KB option 2**。
+注意 KB 寫「9.0.1 已永久修正」，修的是「刪不掉」那個 bug，不是「index 一定同步」，所以 9.1.1 仍可能看到這個現象。
+
+人已經在 NSX Manager root shell 的話，不必裝 paramiko，直接用 nsxcli，**每一台 Manager 節點都要跑**：
+
+```bash
+nsxcli -c "start search resync manager"
+nsxcli -c "start search resync policy"
+```
+
+等 10 分鐘後重跑 `scan`；還在就 `start search resync all` 再等 10 分鐘。
+index 乾淨後 UI 那列 Orphaned 會消失，接著對叢集重套 Transport Node Profile（或對主機按 Resolve）讓 NSX 去 prep。
+prep 前確認主機到各 Manager 的 TCP 1234 / 1235 通，否則下一步會卡 Install Failed。
+
+---
+
 ## 驗證狀態
 
-- 流程（scan / state / resync dry-run / delete + poll / cleanup / report / 安全閘）已用
-  **本機 mock NSX Manager** 端到端跑過，包含 404 `error_code 600` 的 Object-not-found 判定、
-  cursor 分頁、`force=true&unprepare_host=false` 參數檢查。
-- **尚未對真實 NSX Manager 驗過**（lab 當時關機）。第一次對真機用，請先只跑 `scan`。
+- **真機（NSX 9.1.1.0）**：`scan` 已於 2026-10-05 對客戶環境實跑，結果如上；fabric/nodes 回 500 的容錯、
+  search index 比對、discovered node 判讀都正確。
+- `resync` / `delete` / `cleanup` 子命令**仍只有 mock 驗證**，真機上尚未執行過。要用 `delete` 請先不帶 `--yes` 看 dry run。
+- 離線回歸：`cd kb319975-stale-host && python tests/test_scan.py`（11 個測試，約 10 秒，純標準函式庫）。
+  `tests/mock_nsx.py` 可以單獨跑起來當假 NSX 練手：
+  `python tests/mock_nsx.py --scenario rebuilt_host_nsx91 --port 8443` 然後
+  `python kb319975_stale_host.py -n http://127.0.0.1:8443 -p x scan esx04.corp.local`。

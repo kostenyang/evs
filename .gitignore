@@ -1,3 +1,5 @@
 # 執行時產生的報告
 reports/
 kb385606-*.json
+__pycache__/
+kb319975-out/

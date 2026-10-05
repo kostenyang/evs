@@ -337,6 +337,37 @@ def attach_states(client: NsxClient, found: dict, args) -> None:
         item["state"] = read_state(client, "manager", item["id"], args)["summary"]
     for item in found["policy_host_transport_nodes"]:
         item["state"] = read_state(client, "policy", item["id"], args)["summary"]
+    classify_index(found)
+
+
+def _idents_of(obj: dict) -> set[str]:
+    ndi = obj.get("node_deployment_info") or {}
+    vals = [obj.get("id"), obj.get("external_id"), obj.get("unique_id"),
+            obj.get("node_id"), ndi.get("id")]
+    return {str(v) for v in vals if v}
+
+
+def classify_index(found: dict) -> None:
+    """Tell a stale search-index entry from one that merely mirrors a live API object.
+
+    The UI (and SDDC Manager pre-checks) read the search index, so a host can still show
+    up there -- typically as "Orphaned" -- after its transport node is gone from both the
+    Manager and Policy APIs. That is the KB option 2 case. An index entry whose id is
+    also returned by the APIs is just a copy of a live object and must not be treated
+    as a leftover (a vCenter DiscoveredNode for a freshly rebuilt host is the usual
+    false positive).
+    """
+    live: set[str] = set()
+    for key in ("transport_nodes", "fabric_nodes", "discovered_nodes",
+                "policy_host_transport_nodes"):
+        for item in found[key]:
+            live |= _idents_of(item["raw"])
+            live.add(item["id"])
+    for item in found["search_index"]:
+        backed = bool(_idents_of(item["raw"]) & live) or item["id"] in live
+        item["stale"] = not backed
+        item["state"] = ("mirrors a live API object" if backed
+                         else "STALE (no API object behind it)")
 
 
 def read_state(client: NsxClient, api: str, ident: str, args) -> dict:
@@ -372,6 +403,7 @@ def recommend(found: dict) -> list[str]:
     fab = found["fabric_nodes"]
     dis = found["discovered_nodes"]
     idx = found["search_index"]
+    stale_idx = [i for i in idx if i.get("stale", True)]
     tips: list[str] = []
 
     if not any((mgr, pol, fab, dis, idx)):
@@ -380,20 +412,38 @@ def recommend(found: dict) -> list[str]:
                     "(for a vLCM cluster: `nsxcli -c del nsx` on the host).")
         return tips
 
+    if not any((mgr, pol, fab, stale_idx)):
+        # Only a vCenter discovered node (plus its search-index mirror) is left.
+        tips.append("Only a vCenter discovered node exists: NSX sees this host in the "
+                    "compute manager inventory but it is not a transport node. That is "
+                    "the normal state of a new or rebuilt host, NOT a stale entry -- "
+                    "nothing to clean. Prepare it by (re)applying the Transport Node "
+                    "Profile / Configure NSX on the cluster or host.")
+        return tips
+
     if mgr:
         tips.append("KB option 3 (Manager API): force delete the transport node -- "
                     "`delete --api manager --id <uuid> --yes`.")
     if pol:
         tips.append("KB option 4 (Policy API): force delete the host transport node -- "
                     "`delete --api policy --id <node_name> --yes`.")
-    if idx and not (mgr or pol):
-        tips.append("Only the search index still lists this host -- this is exactly "
+    if stale_idx and not (mgr or pol):
+        kinds = sorted({i["source"].split("(")[-1].rstrip(")") for i in stale_idx})
+        tips.append(f"Only the search index still lists this host ({', '.join(kinds)}: "
+                    f"{', '.join(i['id'] for i in stale_idx)}) -- this is exactly "
                     "KB option 2: run `resync` (start search resync policy/manager/"
-                    "telemetry) and wait at least 10 minutes.")
-    if (fab or dis) and not (mgr or pol):
-        tips.append("A fabric/discovered node entry is left without a transport node. "
+                    "telemetry on EVERY manager node) and wait at least 10 minutes. "
+                    "Confirm first with `state --id <id>` that both APIs answer "
+                    "'Object not found'.")
+    if fab and not (mgr or pol):
+        tips.append("A Manager API fabric (host) node is left without a transport node. "
                     "Try KB option 1 (UI: select host > REMOVE NSX > Force Delete) "
                     "after moving the host to standalone in vSphere.")
+    if dis and not (mgr or pol or fab):
+        tips.append("The discovered node entry is the host as vCenter reports it today "
+                    "(expected after a rebuild) -- it is not a leftover and needs no "
+                    "deletion. Once the stale index entry is gone, (re)apply the "
+                    "Transport Node Profile to prepare the host.")
     if any(i["state"].startswith("EXISTS state=success") for i in mgr + pol):
         tips.append("WARNING: at least one entry reports state=success -- that can be a "
                     "LIVE, healthy transport node. Confirm the host really is gone from "
