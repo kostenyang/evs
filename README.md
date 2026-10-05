@@ -4,6 +4,7 @@
 |---|---|---|
 | `kb385606-mp2policy.sh`, `Invoke-NsxMp2Policy.ps1` | [385606](https://knowledge.broadcom.com/external/article/385606) | NSX 升 9 precheck「MP Objects found in DB」：盤點 / promote / 清 bridge FW（本頁下方） |
 | `kb452458-primary-datastore/` | [452458](https://knowledge.broadcom.com/external/article/452458) | Imported cluster 換 principal datastore：SDDC Manager inventory 匯出 / 更新 / 驗證 / 還原 |
+| `kb319975-stale-host/` | [319975](https://knowledge.broadcom.com/external/article/319975) | NSX 主機 install / upgrade 因 stale host entry 失敗：本機 Python 掃 Manager/Policy/search index 殘留、search resync、force delete + poll、support report |
 
 ---
 
@@ -175,3 +176,41 @@ check 模式，行為一致：
 **尚未驗證**：`--action promote` 的實際 promotion 路徑（`POST /api/v1/migration/mp-to-policy` 與
 輪詢、覆核），因為這台 lab 已經是 9.1、沒有殘留 MP 物件可測。要完整驗證需要一套升級前的
 NSX 4.x 環境。步驟 3 / 6 / 7 的回應解析是照 KB 所列的 response 範例寫的。
+
+---
+
+# KB 319975 → script（快速用法）
+
+**KB**: Installing or upgrading NSX on an ESXi host fails because of a stale host entry
+([319975](https://knowledge.broadcom.com/external/article/319975))
+
+ESXi 主機直接從 vCenter 移除、沒先移除 NSX → NSX DB / search index 留下殘留，
+同名或同 IP 的主機加不回來（`Node with same ip already exists`、`Discovered node ... is already prepared`、
+`Failed to get Host status for upgrade unit`）。根本修正在 NSX 4.2.3 / 9.0.1。
+
+在自己的機器上跑，只需要 Python 3.8+（`resync` 要 `paramiko`）：
+
+```bash
+cd kb319975-stale-host
+
+# 1. 診斷：五個來源（Manager API / Policy API / fabric / discovered / search index）一起掃，並告訴你該走哪個 option
+python kb319975_stale_host.py -n <nsx-manager> --insecure scan <esxi-host>
+
+# 2. KB option 2：三台 manager 全部 start search resync，等 10 分鐘重掃
+python kb319975_stale_host.py -n <nsx-manager> --insecure resync <esxi-host> --yes
+
+# 3. KB option 3/4：force=true&unprepare_host=false 刪掉，每 5 分鐘 poll 到 Object not found
+python kb319975_stale_host.py -n <nsx-manager> --insecure delete <esxi-host>          # dry run
+python kb319975_stale_host.py -n <nsx-manager> --insecure delete <esxi-host> --yes    # 真刪
+
+# 4. 一次跑完 scan → resync → delete → poll → 重掃
+python kb319975_stale_host.py -n <nsx-manager> --insecure cleanup <esxi-host> --with-resync --yes --no-confirm
+
+# 5. KB option 5：開 case 用的 JSON + 清單
+python kb319975_stale_host.py -n <nsx-manager> --insecure report <esxi-host>
+```
+
+- `<esxi-host>` 可給 display name / FQDN / 短名 / IP / UUID；`-n`、主機、密碼沒給會互動式問，密碼也吃 `NSX_PASSWORD`
+- **沒 `--yes` 一律 dry run**；state=`success` 的記錄（看起來還活著）會拒刪，要 `--force-anyway`
+- 退出碼：0 乾淨、1 錯誤 / 被安全閘擋、2 還有殘留
+- 完整說明、Security-only cluster / vLCM 注意事項見 [`kb319975-stale-host/README.md`](kb319975-stale-host/README.md)
