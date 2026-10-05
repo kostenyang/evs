@@ -833,6 +833,19 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def has_permanent_fix(version: str) -> bool:
+    """True for NSX >= 4.2.3 on the 4.x line, or >= 9.0.1."""
+    nums = re.findall(r"\d+", version or "")
+    if len(nums) < 3:
+        return False
+    major, minor, patch = (int(n) for n in nums[:3])
+    if major >= 9:
+        return (minor, patch) >= (0, 1)
+    if major == 4:
+        return (minor, patch) >= (2, 3)
+    return major > 4
+
+
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -859,6 +872,10 @@ def main(argv: list[str]) -> int:
                        ca_bundle=args.ca_bundle, timeout=args.timeout, log=log)
     version = client.node_version()
     log(f"NSX {client.base} version {version}")
+    if has_permanent_fix(version):
+        log("  note: this NSX already carries the permanent fix for KB 319975 (4.2.3 / "
+            "9.0.1+). Leftovers here are search-index lag, not database entries -- "
+            "expect APIs to be clean and option 2 (resync) to be the answer.")
 
     handler = {"scan": cmd_scan, "state": cmd_state, "resync": cmd_resync,
                "delete": cmd_delete, "cleanup": cmd_cleanup, "report": cmd_report}
